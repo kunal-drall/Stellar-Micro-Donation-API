@@ -10,6 +10,7 @@
  */
 
 const express = require('express');
+const helmet = require('helmet');
 const config = require('../config');
 const stellarConfig = require('../config/stellar');
 const donationRoutes = require('./donation');
@@ -20,9 +21,11 @@ const transactionRoutes = require('./transaction');
 const apiKeysRoutes = require('./apiKeys');
 const feesRoutes = require('./fees');
 const featureFlagsAdminRoutes = require('./admin/featureFlags');
+const retentionAdminRoutes = require('./admin/retention');
 const networkRoutes = require('./network');
 const webhooksRoutes = require('./webhooks');
 const campaignsRoutes = require('./campaigns');
+const offersRoutes = require('./offers');
 const { errorHandler, notFoundHandler } = require('../middleware/errorHandler');
 const logger = require('../middleware/logger');
 const { attachUserRole } = require('../middleware/rbac');
@@ -38,6 +41,7 @@ const requestId = require('../middleware/requestId');
 const serviceContainer = require('../config/serviceContainer');
 const { payloadSizeLimiter, ENDPOINT_LIMITS } = require('../middleware/payloadSizeLimiter');
 const { createCorsMiddleware } = require('../middleware/cors');
+const { responseFormatterMiddleware } = require('../utils/responseFormatter');
 const {
   logStartupDiagnostics,
   logShutdownDiagnostics,
@@ -89,6 +93,28 @@ app.use((req, res, next) => {
 // Middleware
 app.use(requestId);
 
+// Attach res.success / res.failure envelope helpers (must be after requestId)
+app.use(responseFormatterMiddleware());
+// Security headers (helmet must be early, before routes)
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+    },
+  },
+  frameguard: { action: 'deny' },
+  noSniff: true,
+  referrerPolicy: { policy: 'no-referrer' },
+  hsts: {
+    maxAge: 31536000,       // 1 year
+    includeSubDomains: true,
+    preload: true,
+  },
+  xssFilter: false,         // deprecated header — omit for API servers
+  hidePoweredBy: true,
+}));
+
 // CORS (must be before body parsers and route handlers)
 app.use(createCorsMiddleware());
 
@@ -124,9 +150,11 @@ app.use('/transactions', transactionRoutes);
 app.use('/api-keys', apiKeysRoutes);
 app.use('/fees', feesRoutes);
 app.use('/admin/feature-flags', featureFlagsAdminRoutes);
+app.use('/admin/retention', retentionAdminRoutes);
 app.use('/network', networkRoutes);
 app.use('/webhooks', webhooksRoutes);
 app.use('/campaigns', campaignsRoutes);
+app.use('/offers', offersRoutes);
 
 // Exchange rates endpoint
 app.get('/exchange-rates', async (req, res) => {
@@ -141,6 +169,7 @@ app.get('/exchange-rates', async (req, res) => {
         supportedCurrencies: ['XLM', ...priceOracle.SUPPORTED_CURRENCIES.map(c => c.toUpperCase())],
         cachedAt: new Date().toISOString(),
       }
+      },
     });
   } catch (err) {
     log.error('APP', 'Failed to fetch exchange rates', { error: err.message });
@@ -151,6 +180,7 @@ app.get('/exchange-rates', async (req, res) => {
   }
 });
 
+// Health check endpoint
 // Health check endpoints
 app.get('/health', async (req, res) => {
   const health = await HealthCheckService.getFullHealth(stellarService, networkStatusService);
