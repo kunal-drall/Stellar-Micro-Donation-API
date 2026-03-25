@@ -53,6 +53,7 @@ describe('Database query performance monitoring', () => {
     Database.resetPerformanceMetrics();
     jest.restoreAllMocks();
     jest.spyOn(log, 'warn').mockImplementation(() => {});
+    jest.spyOn(log, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -114,6 +115,20 @@ describe('Database query performance monitoring', () => {
           thresholdMs: 0,
         })
       );
+    });
+
+    test('does not log queries that are exactly at the slow query threshold', () => {
+      process.env.SLOW_QUERY_THRESHOLD_MS = '100';
+      Database.resetPerformanceMetrics();
+
+      Database.recordQueryExecution({
+        method: 'get',
+        sql: 'SELECT 1 AS threshold_probe',
+        durationMs: 100,
+      });
+
+      expect(Database.getSlowQueries()).toEqual([]);
+      expect(log.warn).not.toHaveBeenCalled();
     });
 
     test('stores failed slow queries with failure metadata', () => {
@@ -195,6 +210,15 @@ describe('Database query performance monitoring', () => {
       expect(slowQueries[1].sql).toBe('SELECT 2');
     });
 
+    test('returns defensive copies of slow query entries', () => {
+      Database.recordQueryExecution({ method: 'get', sql: 'SELECT 1 AS immutable', durationMs: 101 });
+
+      const [entry] = Database.getSlowQueries();
+      entry.sql = 'SELECT tampered';
+
+      expect(Database.getSlowQueries()[0].sql).toBe('SELECT 1 AS immutable');
+    });
+
     test('validates SLOW_QUERY_THRESHOLD_MS configuration', () => {
       process.env.SLOW_QUERY_THRESHOLD_MS = '-1';
 
@@ -259,8 +283,28 @@ describe('Database query performance monitoring', () => {
 
       expect(response.status).toBe(400);
       expect(response.body.success).toBe(false);
-      expect(response.body.error.code).toBe('INTERNAL_ERROR');
+      expect(response.body.error.code).toBe('VALIDATION_ERROR');
       expect(response.body.error.message).toContain('limit must be a positive integer');
+    });
+
+    test('rejects malformed limit values that parseInt would previously coerce', async () => {
+      const response = await request(adminApp)
+        .get('/admin/db/slow-queries?limit=1abc')
+        .set('x-api-key', 'admin-test-key');
+
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+      expect(response.body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    test('rejects decimal limit values', async () => {
+      const response = await request(adminApp)
+        .get('/admin/db/slow-queries?limit=1.5')
+        .set('x-api-key', 'admin-test-key');
+
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+      expect(response.body.error.code).toBe('VALIDATION_ERROR');
     });
   });
 
@@ -280,6 +324,13 @@ describe('Database query performance monitoring', () => {
         })
       );
       expect(result.performance.averageQueryTimeMs).toBeGreaterThan(0);
+    });
+
+    test('reports zero average query time when no recent queries have been recorded', () => {
+      const metrics = Database.getPerformanceMetrics();
+
+      expect(metrics.averageQueryTimeMs).toBe(0);
+      expect(metrics.recentQueryCount).toBe(0);
     });
   });
 });

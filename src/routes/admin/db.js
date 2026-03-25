@@ -23,14 +23,15 @@ function parseLimit(rawLimit) {
     return undefined;
   }
 
-  const limit = Number.parseInt(rawLimit, 10);
-  if (!Number.isInteger(limit) || limit <= 0) {
+  if (typeof rawLimit !== 'string' || !/^[1-9]\d*$/.test(rawLimit)) {
     const error = new Error('limit must be a positive integer');
+    error.name = 'ValidationError';
     error.status = 400;
     error.code = 'VALIDATION_ERROR';
     throw error;
   }
 
+  const limit = Number.parseInt(rawLimit, 10);
   return limit;
 }
 
